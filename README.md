@@ -296,17 +296,6 @@ POST /search {"q":"error"} → 503, demo failure path
 
 ---
 
-## 🛣 What's not done (yet)
-
-- Persistence (Postgres / Redis / Kafka).
-- Authentication and per-user Recent.
-- Real consistent-hash ring with vnodes for production variance.
-- Adaptive recency multiplier from CTR.
-- Distributed cache (Redis Cluster) replacing the in-process shim.
-- Tracing / metrics export (OpenTelemetry) and `/healthz`.
-
----
-
 ## 📄 License & attribution
 
 MIT — see commit history. The query dataset is hand-seeded for the demo. The frontend mirrors the design source provided in the assignment brief.
