@@ -78,6 +78,23 @@ function loadTsvQueries(file, queryCol) {
  }
  return out;
 }
+function loadTsvCounts(file) {
+ // Format: query<TAB>count. Counts are absolute frequencies.
+ const p = path.join(__dirname, '..', 'data', file);
+ if (!fs.existsSync(p)) return new Map();
+ const text = fs.readFileSync(p, 'utf8');
+ const out = new Map();
+ for (let line of text.split('\n')) {
+ if (!line) continue;
+ const parts = line.split('\t');
+ if (parts.length < 2) continue;
+ const q = (parts[0] || '').trim().toLowerCase();
+ const n = parseInt(parts[1], 10);
+ if (!q || q.length < 2 || !isFinite(n)) continue;
+ out.set(q, (out.get(q) || 0) + n);
+ }
+ return out;
+}
 function loadCsvQueries(file, queryCol) {
  const p = path.join(__dirname, '..', 'data', file);
  if (!fs.existsSync(p)) return new Map();
@@ -123,7 +140,7 @@ function pickTrendingSeed() {
 }
 function seed() {
  const aol = loadTsvQueries('aol_queries.tsv', 1);
- const products = loadCsvQueries('product_queries.csv', 0);
+ const products = loadTsvCounts('product_queries_freq.tsv');
  const merged = mergeFreq(aol, products);
  // Pull the top-N most frequent queries so the index stays bootable-fast.
  const rows = [...merged.entries()]

@@ -57,7 +57,7 @@ public class Store {
  private void loadDataset() {
  String dataDir = System.getenv().getOrDefault("DATA_DIR", "data");
  Map<String, Long> aol = aggregateOccurrences(dataDir + "/aol_queries.tsv", true, 1);
- Map<String, Long> products = aggregateOccurrences(dataDir + "/product_queries.csv", false, 0);
+ Map<String, Long> products = aggregateTsvCounts(dataDir + "/product_queries_freq.tsv");
  System.out.println("Loaded aol=" + aol.size() + " products=" + products.size());
  // Union: counts = freq(aol) + freq(products). Cap at 200k most frequent.
  Map<String, Long> merged = new HashMap<>(aol);
@@ -68,6 +68,29 @@ public class Store {
  .forEach(e -> counts.put(e.getKey(), e.getValue()));
  System.out.println("Loaded dataset: " + counts.size() + " unique queries");
  seedRecencyFromTrends(dataDir + "/trends.csv");
+ }
+
+ private Map<String, Long> aggregateTsvCounts(String path) {
+ // Format: query<TAB>count. Counts are absolute frequencies (pre-aggregated).
+ Map<String, Long> out = new HashMap<>();
+ java.io.File f = new java.io.File(path);
+ if (!f.exists()) return out;
+ try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+ String line;
+ while ((line = br.readLine()) != null) {
+ if (line.isBlank()) continue;
+ String[] parts = line.split("\t", -1);
+ if (parts.length < 2) continue;
+ String q = parts[0].trim().toLowerCase();
+ long n;
+ try { n = Long.parseLong(parts[1].trim()); } catch (Exception ex) { continue; }
+ if (q.length() < 2) continue;
+ out.merge(q, n, Long::sum);
+ }
+ } catch (Exception e) {
+ System.err.println("Load failed " + path + ": " + e);
+ }
+ return out;
  }
 
  private Map<String, Long> aggregateOccurrences(String path, boolean tab, int queryCol) {
