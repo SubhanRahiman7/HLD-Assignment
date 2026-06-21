@@ -360,12 +360,7 @@ GET /telemetry (after) → hits, misses, hitRate, p95SuggestMs=5.1
 
 ### 5.6 Future work / what's not done
 
-- Persistence (Postgres / Redis / Kafka).
-- Authentication and per-user Recent.
-- Per-prefix Bloom-filter pre-check before linear scan.
-- Adaptive recency weights from CTR.
-- Distributed cache (Redis Cluster) replacing the in-process ring.
-- Tracing / metrics export (OpenTelemetry) and `/healthz`.
+Per-prefix Bloom-filter pre-check before linear scan.
 
 ---
 
