@@ -1,6 +1,9 @@
 // Node primary store — mirrors Store.java.
 // Keyed by query; buckets: [last5m, last1h, last24h] decayed by RecencyDecay job.
 
+const fs = require('fs');
+const path = require('path');
+
 function makeBuckets() { return [0, 0, 0]; }
 
 const DATA = []; // {q, c} — final source of truth for queries/counts
@@ -50,167 +53,89 @@ function decayRecency() {
  if (v[0] + v[1] + v[2] < 1) recency.delete(k);
  }
 }
+
+// Data loaders. All three are real Kaggle-derived files in data/.
+// - aol_queries.tsv : AOL search log. id<TAB>query
+// - product_queries.csv : Amazon ESCI product search queries
+// - trends.csv : Google Trends top queries by year/category
+//
+// Frequency is aggregated by raw query text (case-insensitive), then
+// counts are merged across sources so a query that appears in all three
+// gets the union of its frequencies.
+function loadTsvQueries(file, queryCol) {
+ const p = path.join(__dirname, '..', 'data', file);
+ if (!fs.existsSync(p)) return new Map();
+ const text = fs.readFileSync(p, 'utf8');
+ const out = new Map();
+ for (let line of text.split('\n')) {
+ if (!line) continue;
+ if (line.startsWith('Query') || line.startsWith('query')) continue; // header
+ const parts = line.split('\t');
+ if (parts.length <= queryCol) continue;
+ const q = (parts[queryCol] || '').trim().toLowerCase();
+ if (!q || q.length < 2) continue;
+ out.set(q, (out.get(q) || 0) + 1);
+ }
+ return out;
+}
+function loadCsvQueries(file, queryCol) {
+ const p = path.join(__dirname, '..', 'data', file);
+ if (!fs.existsSync(p)) return new Map();
+ const text = fs.readFileSync(p, 'utf8');
+ const out = new Map();
+ for (let line of text.split('\n')) {
+ if (!line) continue;
+ if (line.startsWith('Query') || line.startsWith('query')) continue; // header
+ const parts = line.split(',');
+ if (parts.length <= queryCol) continue;
+ const q = (parts[queryCol] || '').trim().toLowerCase().replace(/^"|"$/g, '');
+ if (!q || q.length < 2) continue;
+ out.set(q, (out.get(q) || 0) + 1);
+ }
+ return out;
+}
+function mergeFreq(...maps) {
+ const out = new Map();
+ for (const m of maps) {
+ for (const [k, v] of m) out.set(k, (out.get(k) || 0) + v);
+ }
+ return out;
+}
+function pickTrendingSeed() {
+ // Google Trends: rank indicates popularity. Use low ranks (most popular)
+ // to seed the recency buckets so /trending returns sensible defaults
+ // before the user starts searching.
+ const p = path.join(__dirname, '..', 'data', 'trends.csv');
+ if (!fs.existsSync(p)) return;
+ const text = fs.readFileSync(p, 'utf8');
+ const lines = text.split('\n');
+ const scored = new Map(); // query -> max score (lower rank == higher score)
+ for (let i = 1; i < lines.length; i++) {
+ const parts = lines[i].split(',');
+ if (parts.length < 5) continue;
+ const rank = parseInt(parts[3], 10);
+ const q = (parts[4] || '').trim().toLowerCase();
+ if (!q || !isFinite(rank)) continue;
+ const score = Math.max(0, 30 - rank);
+ if (score > (scored.get(q) || 0)) scored.set(q, score);
+ }
+ for (const [q, s] of scored) recency.set(q, [s, s + 2, s + 4]);
+}
 function seed() {
- generateSynthetic();
- recency.set('world cup schedule', [9, 12, 15]);
- recency.set('chatgpt', [6, 8, 12]);
- recency.set('taylor swift tickets', [7, 9, 11]);
- recency.set('iphone 15', [4, 5, 8]);
- recency.set('best laptops 2026', [5, 6, 9]);
- recency.set('react hooks', [3, 4, 7]);
-}
-function zipfSample(rng, n) {
- const theta = 1.07;
- let z = 0;
- for (let i = 1; i <= n; i++) z += 1 / Math.pow(i, theta);
- const u = rng.nextDouble();
- let x = 0, cdf = 0;
- for (let i = 1; i <= n; i++) {
- cdf += 1 / Math.pow(i, theta) / z;
- if (u <= cdf) { x = i; break; }
+ const aol = loadTsvQueries('aol_queries.tsv', 1);
+ const products = loadCsvQueries('product_queries.csv', 0);
+ const merged = mergeFreq(aol, products);
+ // Pull the top-N most frequent queries so the index stays bootable-fast.
+ const rows = [...merged.entries()]
+ .sort((a, b) => b[1] - a[1])
+ .slice(0, 200_000);
+ for (const [q, c] of rows) {
+ DATA.push({ q, c });
+ index.set(q, DATA[DATA.length - 1]);
  }
- return x - 1;
-}
-function generateSynthetic() {
- const brands = ['iphone','iphone 15','iphone 15 pro','iphone 15 pro max','iphone charger',
- 'iphone case','ipad','ipad pro','airpods','airpods pro','samsung galaxy s24','samsung tv',
- 'macbook air','macbook pro','nintendo switch 2','sony headphones','java tutorial','java jobs',
- 'javascript','javascript array methods','python tutorial','python pandas','react hooks',
- 'react router','react native','redis caching','system design interview','how to tie a tie',
- 'how to screenshot on mac','how to boil eggs','how to invest in stocks','best laptops 2026',
- 'best headphones','best coffee maker','best running shoes','taylor swift tickets',
- 'world cup schedule','weather today','amazon prime day','chatgpt','flight tickets',
- 'nike air force 1','adidas samba','coffee near me','concert tickets','pixel 9','pixel 9 pro',
- 'surface pro','rog ally','steam deck','ps5 slim','xbox series x','lego set','yoga mat',
- 'kettle','blender','air fryer','vacuum cleaner','robot vacuum','kindle','echo dot','fire tv stick',
- 'iphone 14','iphone 13','iphone se','iphone xr','iphone 11','samsung s23','samsung a54',
- 'pixel 8','pixel 7a','oneplus 12','xiaomi 14','huawei p60','galaxy z fold','galaxy z flip',
- 'apple watch','apple watch ultra','fitbit','garmin','airpods max','sony wf','bose qc',
- 'bose 700','logitech mx','razer','corsair','asus rog','msi','lenovo thinkpad','dell xps',
- 'hp pavilion','surface laptop','framework','gopro','dji','canon','nikon','fujifilm',
- 'playstation','xbox','steam','epic games','roblox','minecraft','fortnite','league of legends',
- 'valorant','cs2','apex legends','overwatch','hearthstone','diablo','wow','elder scrolls',
- 'baldur gate 3','zelda','pokemon','mario','smash bros','halo','destiny','warframe',
- 'final fantasy','persona','resident evil','silent hill','dark souls','elden ring','cyberpunk',
- 'witcher','skyrim','fallout','no man sky','stardew','terraria','among us','phasmophobia',
- 'lethal company','helldivers 2','baldur','spider-man','god of war','horizon','forza',
- 'gran turismo','fifa','madden','nba 2k','f1','rocket league','rainbow six','pubg',
- 'call of duty','battlefield','destiny 2','diablo 4','genshin impact','honkai','wuthering',
- 'star rail','tower of fantasy','lost ark','new world','guild wars','black desert','maplestory'];
- const actions = ['how to','best','cheap','top','new','used','review','vs','for','near me','tutorial','guide','examples','vs alternatives','reddit','amazon','walmart','target','costco','ebay','aliexpress','shop','buy','price','price drop','deals','coupon','promo','sale','clearance','outlet','used','refurbished','open box'];
- const nouns = ['laptop','phone','headphones','shoes','watch','camera','television','monitor','keyboard','mouse','chair','desk','lamp','backpack','speaker','tablet','router','ssd','gpu','cpu','ram','psu','case','fan','cooler','battery','charger','cable','adapter','stand','mat','bottle','bag','wallet','belt','hat','sunglasses','jacket','sweater','jeans','dress','skirt','shoe','sandal','boot','sock','glove','scarf','gloves','bed','pillow','blanket','sheet','towel','shower','curtain','rug','mirror','clock','vase','plant','pot','shelf','drawer','cabinet','sofa','couch','ottoman','bench','stool','table','desk','lamp','fan','heater','cooler','vacuum','mop','broom','bucket','trash','bin','bag','backpack','tent','sleeping bag','lantern','thermos','cooler','stove','grill','knife','cutting board','pan','pot','kettle','blender','mixer','toaster','oven','microwave','dishwasher','fridge','freezer','washer','dryer','iron','steamer','hair','dryer','shaver','trimmer','scale','blood','pressure','thermometer','first aid','bandage','vitamin','supplement','protein','creatine','pre','workout','yoga','mat','foam','roller','weights','dumbbell','bench','bike','treadmill','rower','elliptical','stair','climber','ski','snowboard','skateboard','helmet','pads','cleats','sneakers','boots','trail','running','hiking','camping','fishing','hunting','binoculars','scope','range','finder','compass','map','gps'];
- const tech = ['react','vue','svelte','angular','next.js','nuxt','remix','astro','solid','qwik',
- 'node.js','express','nestjs','fastify','koa','deno','bun','django','flask','fastapi','spring boot',
- 'spring','hibernate','kafka','redis','postgres','mysql','mongodb','elasticsearch','docker','kubernetes',
- 'aws','gcp','azure','terraform','ansible','jenkins','github actions','nginx','haproxy','graphql','grpc',
- 'rest','websocket','oauth','jwt','saml','openid','cors','xss','csrf','vite','webpack','turbopack','esbuild',
- 'rollup','parcel','babel','swc','typescript','javascript','python','java','go','rust','kotlin','swift',
- 'ruby','scala','elixir','haskell','clojure','erlang','lua','perl','php','sql','prisma','sequelize','drizzle',
- 'typeorm','hibernate','sqlalchemy','alembic','flyway','liquibase','maven','gradle','npm','yarn','pnpm',
- 'bun','deno','pip','poetry','conda','cargo','go mod','composer','rubygems','nuget','pub','swiftpm',
- 'openjdk','graalvm','corretto','temurin','zulu','dragonwell','sapmachine','bellsoft','azul','liberica',
- 'ktor','micronaut','quarkus','helidon','play','sparkjava','jooby','javalin','ratpack','vert.x','mutiny',
- 'reactor','rxjava','kotlin coroutines','virtual threads','loom','structured concurrency','scoped values',
- 'vector api','panama','foreign function','graalvm native','spring native','quarkus native','helidon native',
- 'micronaut graal','aws lambda','cloud functions','cloud run','azure functions','azure container apps',
- 'ecs','eks','fargate','cloud run','cloud build','code build','cloud deploy','azure devops','github actions',
- 'circleci','travis','gitlab','bitbucket','argocd','fluxcd','helm','kustomize','skaffold','tilt','skaffold',
- 'snyk','trivy','clair','grype','checkov','tfsec','kics','terrascan','wiz','lacework','orca','prisma cloud',
- 'datadog','new relic','dynatrace','splunk','elk','grafana','loki','tempo','mimir','cortex','thanos','victoria',
- 'prometheus','alertmanager','pagerduty','opsgenie','victorops','firehydrant','incident.io','rootly','blameless',
- 'verica','chaos engineering','gremlin','chaos mesh','litmus','steadybit','n8n','airflow','dagster','prefect',
- 'argo','kubeflow','mlflow','bentoml','ray serve','triton','torchserve','seldon','kfserving','serving',
- 'vector db','pinecone','weaviate','qdrant','milvus','chroma','pgvector','llamaindex','langchain',
- 'haystack','semantic kernel','autogen','crewai','smolagents','llama.cpp','ollama','vllm','tgi','truss',
- 'replicate','modal','banana','beam','runpod','lambda labs','coreweave','together','','groq',
- 'fireworks','anyscale','','octo','hex','dbt','airbyte','fivetran','stitch','mode','looker',
- 'tableau','superset','metabase','preset','redash','databricks','snowflake','bigquery','redshift',
- 'synapse','databricks sql','athena','trino','presto','druid','pinot','clickhouse','duckdb','polars',
- 'pandas','dask','spark','ray','modin','vaex','cudf','cupy','pytorch','tensorflow','jax','onnx','tensorrt',
- 'openvino','tvm','mlir','cuda','rocm','opencl','sycl','metal','vulkan','directx','opengl','webgl','webgpu',
- 'wasm','emscripten','llvm','clang','gcc','rustc','go','zig','nim','crystal','dart','flutter','kotlin',
- 'swift','scala','groovy','clojure','elixir','erlang','haskell','ocaml','fsharp','reasonml','elm','purescript',
- 'haxe','nim','crystal','d','v','hare','carbon','mojo','spade'];
- const suffixes = [' tutorial',' guide',' examples',' crash course',' cheatsheet',' best practices',
- ' interview questions',' roadmap',' documentation',' cli',' api',' sdk',' vs alternatives',
- ' on aws',' on gcp',' on azure',' on kubernetes',' on docker',' performance',' caching',
- ' logging',' monitoring',' testing',' security',' authentication',' authorization',
- ' vs graphql',' vs grpc',' vs rest',' vs websocket',' vs kafka',' vs rabbitmq',' vs redis',
- ' vs postgres',' vs mysql',' vs mongodb',' vs elasticsearch',' vs docker',' vs kubernetes',
- ' vs terraform',' vs ansible',' vs jenkins',' vs github actions',' vs nginx',' vs haproxy',
- ' vs oauth',' vs jwt',' vs saml'];
- const brandSuffix = [' review',' vs samsung',' vs google',' vs xiaomi',' vs oneplus',' vs huawei',
- ' release date',' colors',' sizes',' weight',' battery',' camera',' specs',' price',' deals',
- ' best deal',' cheapest',' on amazon',' on walmart',' on best buy',' unlocked',' verizon',' att',
- ' tmobile',' prepaid',' contract',' trade in',' refurbished',' pros and cons',' reddit'];
- const rng = new seededRng(42);
- const seen = new Set();
- let base = 200_000;
- function add(q) {
- const k = q.toLowerCase();
- if (seen.has(k)) return;
- seen.add(k);
- DATA.push({ q: k, c: Math.max(50, base--) });
- index.set(k, DATA[DATA.length - 1]);
- }
- for (const b of brands) add(b);
- for (const a of actions) for (const n of nouns) add(`${a} ${n}`);
-
- outer:
- for (let i = 0; i < tech.length; i++) {
- for (let j = i + 1; j < tech.length; j++) {
- add(`${tech[i]} vs ${tech[j]}`);
- if (DATA.length >= 110_000) break outer;
- }
- }
-
- outer2:
- if (DATA.length < 110_000) {
- for (const t of tech) {
- for (const s of suffixes) {
- add(t + s);
- if (DATA.length >= 110_000) break outer2;
- }
- }
- }
-
- outer3:
- if (DATA.length < 110_000) {
- for (const b of brands) {
- for (const s of brandSuffix) {
- add(b + s);
- if (DATA.length >= 110_000) break outer3;
- }
- }
- }
- outer4:
- if (DATA.length < 110_000) {
- // Triple combos: <action> <noun> <suffix>
- for (const a of actions) {
- for (const n of nouns) {
- for (const s of suffixes) {
- add(`${a} ${n}${s}`);
- if (DATA.length >= 110_000) break outer4;
- }
- }
- }
- }
- outer5:
- if (DATA.length < 110_000) {
- // brand + tech: "iphone react", "samsung svelte"
- for (const b of brands) {
- for (const t of tech) {
- add(`${b} ${t}`);
- if (DATA.length >= 110_000) break outer5;
- }
- }
- }
- console.log('Generated synthetic corpus:', DATA.length, 'unique queries');
-}
-
-function seededRng(seed) {
- let s = seed;
- return { nextDouble() { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000; } };
+ pickTrendingSeed();
+ console.log('Loaded dataset:', rows.length, 'unique queries from',
+ 'aol(' + aol.size + ') + products(' + products.size + ')');
 }
 
 module.exports = {

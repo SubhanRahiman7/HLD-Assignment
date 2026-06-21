@@ -145,9 +145,9 @@ public class TypeaheadController {
  "hits", hits.get(),
  "misses", misses.get(),
  "hitRate", Math.round(hitRate * 100.0) / 100.0,
- "batches", store.totalBatches.get(),
- "batchedOps", store.totalBatchedOps.get(),
- "lastFlushMs", store.lastFlushMs,
+ "batches", store.totalBatches(),
+ "batchedOps", store.totalBatchedOps(),
+ "lastFlushMs", store.lastFlushMs(),
  "cacheSize", cacheSize,
  "dataSize", store.counts.size(),
  "pendingWrites", store.pendingWrites(),
@@ -159,10 +159,10 @@ public class TypeaheadController {
  public Map<String, Object> benchmark(@RequestParam(name = "writes", defaultValue = "1000") int writesN) {
  int n = Math.max(1, Math.min(10_000, writesN));
  String[] sample = {"iphone", "iphone 15", "airpods", "chatgpt", "react hooks", "java tutorial", "macbook air"};
- long beforeBatches = store.totalBatches.get();
+ long beforeBatches = store.totalBatches();
  for (int i = 0; i < n; i++) store.enqueueIncrement(sample[i % sample.length]);
  store.flush();
- long afterBatches = store.totalBatches.get();
+ long afterBatches = store.totalBatches();
  long actualBatchedWrites = afterBatches - beforeBatches;
  double reduction = actualBatchedWrites == 0 ? 0 : Math.round(n * 100.0 / actualBatchedWrites) / 100.0;
  return Map.of(
