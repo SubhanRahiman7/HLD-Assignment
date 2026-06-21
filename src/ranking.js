@@ -1,21 +1,29 @@
-// Ranking:
-// - 'popularity' (60% marks): sort by all-time count desc
-// - 'recency' (20% marks): sort by count + recentActivity * weight desc
-// - suggestion filter: prefix-matches only, top 10
+// Node ranker: matches Java Ranker — popularity / recency with bucket weights.
+const RECENCY_WEIGHT = 30_000;
+const W5 = 5, W1 = 1, W24 = 0.1;
 
-const RECENCY_WEIGHT = 30000;
-
-function rank(data, prefix, mode, recentActivity) {
- const matches = prefix
- ? data.filter((d) => d.q.toLowerCase().startsWith(prefix))
- : data.slice();
+function rank(DATA, prefix, mode, recencyMap) {
+ const p = (prefix ?? '').toLowerCase();
+ const matches = [];
+ for (const e of DATA) {
+ if (!p || e.q.toLowerCase().startsWith(p)) matches.push(e);
+ }
  matches.sort((a, b) => {
- const sa = mode === 'recency' ? a.c + (recentActivity[a.q] || 0) * RECENCY_WEIGHT : a.c;
- const sb = mode === 'recency' ? b.c + (recentActivity[b.q] || 0) * RECENCY_WEIGHT : b.c;
- if (sb !== sa) return sb - sa;
- return a.q.localeCompare(b.q);
+ const sa = score(a, mode, recencyMap);
+ const sb = score(b, mode, recencyMap);
+ return sb - sa || a.q.localeCompare(b.q);
  });
  return matches;
 }
 
-module.exports = { rank, RECENCY_WEIGHT };
+function score(e, mode, recencyMap) {
+ if (mode === 'recency') {
+ const b = recencyMap.get(e.q.toLowerCase());
+ if (!b) return e.c;
+ const r = b[0] * W5 + b[1] * W1 + b[2] * W24;
+ return e.c + r * RECENCY_WEIGHT;
+ }
+ return e.c;
+}
+
+module.exports = { rank };

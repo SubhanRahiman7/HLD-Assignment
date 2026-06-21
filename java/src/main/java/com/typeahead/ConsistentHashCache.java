@@ -3,70 +3,80 @@ package com.typeahead;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 /**
- * Consistent-hashing shim across N logical cache nodes.
+ * Real consistent-hash ring.
  *
- * Real ring would sort hashed nodes on a 2^32 ring and walk clockwise;
- * for 4 nodes we use FNV-1a + modulo, which is the simplest correct
- * demonstration of cache-shard routing and behaves like a real ring:
- * adding a node only redistributes ~1/N of the keys.
+ * Each of N logical nodes is hashed VIRTUAL_NODES times onto a 2^32 ring.
+ * Lookup: hash(key) -> walk clockwise -> first node >= hash owns the key.
+ *
+ * Properties:
+ * - Adding a node only moves ~1/N of keys (the ones between it and its predecessor).
+ * - Removing a node only moves ~1/N of keys.
+ * - Each node owns ~equal total keys (because of virtual nodes).
+ *
+ * Modulo-N would NOT have these properties; every key reshuffles on N change.
  */
 @org.springframework.stereotype.Component
 public class ConsistentHashCache {
 
-	private static final List<String> NODES = List.of("cache-a", "cache-b", "cache-c", "cache-d");
-	private final Map<String, Map<String, Entry>> perNode = new ConcurrentHashMap<>();
+ private static final List<String> NODES = List.of("cache-a", "cache-b", "cache-c", "cache-d");
+ private static final int VIRTUAL_NODES = 200;
 
-	public ConsistentHashCache() {
-		for (String n : NODES) {
-			perNode.put(n, new ConcurrentHashMap<>());
-		}
-	}
+ private final NavigableMap<Long, String> ring = new ConcurrentSkipListMap<>();
+ private final Map<String, Map<String, Entry>> perNode = new ConcurrentHashMap<>();
 
-	public static List<String> nodes() { return NODES; }
+ public ConsistentHashCache() {
+ for (String n : NODES) perNode.put(n, new ConcurrentHashMap<>());
+ for (String n : NODES) {
+ for (int i = 0; i < VIRTUAL_NODES; i++) {
+ ring.put(fnv1a(n + "#" + i), n);
+ }
+ }
+ }
 
-	public String nodeFor(String prefix) {
-		String p = prefix == null ? "" : prefix;
-		int idx = fnv1a(p) % NODES.size();
-		return NODES.get(idx);
-	}
+ public static List<String> nodes() { return NODES; }
 
-	public Map<String, Map<String, Entry>> perNode() { return perNode; }
+ /** Walk clockwise from the key's hash to the first node. */
+ public String nodeFor(String prefix) {
+ String p = prefix == null ? "" : prefix;
+ if (p.isEmpty()) return NODES.get(0);
+ Long h = fnv1a(p);
+ var entry = ring.ceilingEntry(h);
+ if (entry == null) entry = ring.firstEntry();
+ return entry.getValue();
+ }
 
-	public void invalidatePrefix(String prefix) {
-		for (Map<String, Entry> m : perNode.values()) {
-			m.remove(prefix);
-		}
-	}
+ public Map<String, Map<String, Entry>> perNode() { return perNode; }
 
-	public void invalidateAll() {
-		for (Map<String, Entry> m : perNode.values()) {
-			m.clear();
-		}
-	}
+ public void invalidateAll() {
+ for (Map<String, Entry> m : perNode.values()) m.clear();
+ }
 
-	public boolean debugHas(String prefix) {
-		return perNode.get(nodeFor(prefix)).containsKey(prefix);
-	}
+ public boolean debugHas(String prefix) {
+ return perNode.get(nodeFor(prefix)).containsKey(prefix);
+ }
 
-	public static int fnv1a(String s) {
-		byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
-		int h = 0x811c9dc5;
-		for (byte b : bytes) {
-			h ^= (b & 0xff);
-			h *= 0x01000193;
-		}
-		return h & 0x7fffffff;
-	}
+ public static long fnv1a(String s) {
+ byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+ long h = 0x811c9dc5L;
+ for (byte b : bytes) {
+ h ^= (b & 0xff);
+ h *= 0x01000193L;
+ }
+ return h & 0x7fffffffL;
+ }
 
-	public static final class Entry {
-		public final long at;
-		public final List<Suggestion> list;
-		public Entry(long at, List<Suggestion> list) {
-			this.at = at;
-			this.list = list;
-		}
-	}
+ public static final class Entry {
+ public final long at;
+ public final List<Suggestion> list;
+ public Entry(long at, List<Suggestion> list) {
+ this.at = at;
+ this.list = list;
+ }
+ }
 }

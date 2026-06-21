@@ -194,7 +194,7 @@ function showSuccess(data) {
  successEl.innerHTML = `
  <div class="result-meta">POST /search · <span class="ok">200 OK</span> · ${data.ms}ms</div>
  <div class="result-body">{ "message": "Searched" }</div>
- <div class="result-note">Recorded <strong>"${escapeHtml(data.query)}"</strong> · query count → <code>${fmt(data.count)}</code> · cache invalidated</div>
+ <div class="result-note">Recorded <strong>"${escapeHtml(data.query)}"</strong> · query count → <code>${data.count}</code> · cache invalidated</div>
  `;
 }
 

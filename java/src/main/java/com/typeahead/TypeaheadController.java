@@ -1,46 +1,31 @@
 package com.typeahead;
 
-import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @RestController
 public class TypeaheadController {
 
+ private static final long CACHE_TTL_MS = 60_000L;
+
  private final Store store;
  private final Recent recent;
  private final ConsistentHashCache cache;
- private static final long CACHE_TTL_MS = 60_000L;
+ private final BatchScheduler scheduler;
 
  private final AtomicLong hits = new AtomicLong();
  private final AtomicLong misses = new AtomicLong();
- private final AtomicLong writes = new AtomicLong();
+ private final java.util.concurrent.ConcurrentSkipListMap<Double, Long> suggestSamples = new java.util.concurrent.ConcurrentSkipListMap<>();
+ private final java.util.concurrent.atomic.AtomicLong sampleCount = new java.util.concurrent.atomic.AtomicLong();
 
- public TypeaheadController(Store store, Recent recent, ConsistentHashCache cache) {
+ public TypeaheadController(Store store, Recent recent, ConsistentHashCache cache, BatchScheduler scheduler) {
  this.store = store;
  this.recent = recent;
  this.cache = cache;
- }
-
- public static String fmt(long n) {
- if (n >= 1_000_000) {
- double v = n / 1_000_000.0;
- String s = String.format("%.1f", v);
- if (s.endsWith(".0")) s = s.substring(0, s.length() - 2);
- return s + "M";
- }
- if (n >= 1_000) return Math.round(n / 1_000.0) + "K";
- return String.valueOf(n);
- }
-
- private int rndInt(int a, int b) {
- return a + (int) (Math.random() * (b - a + 1));
- }
-
- private double elapsedMs(long startNs) {
- return Math.round((System.nanoTime() - startNs) / 10_000.0) / 100.0;
+ this.scheduler = scheduler;
  }
 
  @GetMapping("/suggest")
@@ -57,27 +42,31 @@ public class TypeaheadController {
  long now = System.currentTimeMillis();
  if (cached != null && (now - cached.at) < CACHE_TTL_MS) {
  hits.incrementAndGet();
+ double ms = elapsedMs(started);
+ recordSample(ms);
  return Map.of(
  "suggestions", cached.list,
  "node", node,
  "hit", true,
- "ms", elapsedMs(started)
+ "ms", ms
  );
  }
  misses.incrementAndGet();
- List<QueryCount> ranked = Ranker.rank(store.data, prefix, mode, store.recentActivity);
+ List<Map.Entry<String, Long>> ranked = Ranker.rank(store.counts, prefix, mode, store.recency());
  List<Suggestion> top = new ArrayList<>();
  int limit = Math.min(10, ranked.size());
  for (int i = 0; i < limit; i++) {
- QueryCount d = ranked.get(i);
- top.add(new Suggestion(d.q(), d.c()));
+ Map.Entry<String, Long> e = ranked.get(i);
+ top.add(new Suggestion(e.getKey(), e.getValue()));
  }
  nodeMap.put(prefix, new ConsistentHashCache.Entry(now, top));
+ double ms = elapsedMs(started);
+ recordSample(ms);
  return Map.of(
  "suggestions", top,
  "node", node,
  "hit", false,
- "ms", elapsedMs(started)
+ "ms", ms
  );
  }
 
@@ -91,45 +80,34 @@ public class TypeaheadController {
  ));
  }
  long started = System.nanoTime();
- String key = q.toLowerCase();
- QueryCount entry = null;
- synchronized (store.data) {
- for (QueryCount d : store.data) if (d.q().toLowerCase().equals(key)) { entry = d; break; }
- }
- if (entry != null) {
- store.enqueueIncrement(entry.q());
- } else {
- synchronized (store.data) { store.data.add(new QueryCount(q, 1)); }
- store.countStore.put(q, 1L);
- entry = new QueryCount(q, 1);
- }
- store.recentActivity.merge(q, 1L, Long::sum);
- // Pre-flush so the response shows the new count.
+
+ store.enqueueIncrement(q);
  store.flush();
- writes.incrementAndGet();
- // Narrow cache invalidation: only prefixes that this query extends.
+
+ String key = q.toLowerCase();
  for (String node : ConsistentHashCache.nodes()) {
  Map<String, ConsistentHashCache.Entry> m = cache.perNode().get(node);
  for (String k : new ArrayList<>(m.keySet())) {
- if (entry.q().toLowerCase().startsWith(k)) m.remove(k);
+ if (key.startsWith(k)) m.remove(k);
  }
  }
+
  recent.add(q);
  return ResponseEntity.ok(Map.of(
  "message", "Searched",
- "query", entry.q(),
- "count", store.countStore.getOrDefault(entry.q(), entry.c()),
+ "query", q,
+ "count", store.counts.getOrDefault(q, 0L),
  "ms", elapsedMs(started)
  ));
  }
 
  @GetMapping("/trending")
  public Map<String, Object> trending(@RequestParam(name = "mode", defaultValue = "popularity") String mode) {
- List<QueryCount> ranked = Ranker.rank(store.data, "", mode, store.recentActivity);
+ List<Map.Entry<String, Long>> ranked = Ranker.rank(store.counts, "", mode, store.recency());
  List<Map<String, Object>> out = new ArrayList<>();
  for (int i = 0; i < Math.min(6, ranked.size()); i++) {
- QueryCount d = ranked.get(i);
- out.add(Map.of("q", d.q(), "c", d.c()));
+ Map.Entry<String, Long> e = ranked.get(i);
+ out.add(Map.of("q", e.getKey(), "c", e.getValue()));
  }
  return Map.of(
  "trending", out,
@@ -161,16 +139,19 @@ public class TypeaheadController {
  @GetMapping("/telemetry")
  public Map<String, Object> telemetry() {
  int cacheSize = cache.perNode().values().stream().mapToInt(Map::size).sum();
+ long total = hits.get() + misses.get();
+ double hitRate = total == 0 ? 0 : (100.0 * hits.get() / total);
  return Map.of(
  "hits", hits.get(),
  "misses", misses.get(),
- "writes", writes.get(),
+ "hitRate", Math.round(hitRate * 100.0) / 100.0,
  "batches", store.totalBatches.get(),
  "batchedOps", store.totalBatchedOps.get(),
  "lastFlushMs", store.lastFlushMs,
  "cacheSize", cacheSize,
- "dataSize", store.data.size(),
- "pendingWrites", store.pendingWrites()
+ "dataSize", store.counts.size(),
+ "pendingWrites", store.pendingWrites(),
+ "p95SuggestMs", computeP95()
  );
  }
 
@@ -180,7 +161,6 @@ public class TypeaheadController {
  String[] sample = {"iphone", "iphone 15", "airpods", "chatgpt", "react hooks", "java tutorial", "macbook air"};
  long beforeBatches = store.totalBatches.get();
  for (int i = 0; i < n; i++) store.enqueueIncrement(sample[i % sample.length]);
- // Force a flush right after for deterministic counts.
  store.flush();
  long afterBatches = store.totalBatches.get();
  long actualBatchedWrites = afterBatches - beforeBatches;
@@ -191,5 +171,27 @@ public class TypeaheadController {
  "writeReductionFactor", reduction,
  "note", "Batch coalesces same-query writes within a 2s window into a single store update."
  );
+ }
+
+ private double elapsedMs(long startNs) {
+ return Math.round((System.nanoTime() - startNs) / 10_000.0) / 100.0;
+ }
+
+ private void recordSample(double ms) {
+ if (suggestSamples.size() < 5000) {
+ suggestSamples.put(ms, sampleCount.incrementAndGet());
+ }
+ }
+
+ private double computeP95() {
+ if (suggestSamples.isEmpty()) return 0.0;
+ long total = sampleCount.get();
+ long target = (long) Math.ceil(total * 0.95);
+ long acc = 0;
+ for (var e : suggestSamples.entrySet()) {
+ acc += e.getValue();
+ if (acc >= target) return e.getKey();
+ }
+ return suggestSamples.lastKey();
  }
 }
