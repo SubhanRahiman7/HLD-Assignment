@@ -25,6 +25,7 @@ body {
  -webkit-font-smoothing: antialiased;
 }
 input::placeholder { color: var(--muted); }
+[hidden] { display: none !important; }
 @keyframes ta-fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes ta-spin { to { transform: rotate(360deg); } }
 @keyframes ta-shimmer { 0% { opacity: .45; } 50% { opacity: .9; } 100% { opacity: .45; } }
@@ -111,9 +112,10 @@ input::placeholder { color: var(--muted); }
  border: 2px solid rgba(255, 255, 255, 0.4);
  border-top-color: #fff;
  border-radius: 50%;
- display: inline-block;
+ display: none;
  animation: ta-spin .6s linear infinite;
 }
+.submit-spinner:not([hidden]) { display: inline-block; }
 
 .dropdown {
  position: absolute;
