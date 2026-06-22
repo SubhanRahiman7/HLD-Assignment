@@ -28,6 +28,7 @@ Built for the **High-Level Design** assignment · mirrors the supplied design 1:
 | 🎯 **Narrow cache invalidation** | Only entries whose key is a prefix of the searched query are dropped. |
 | 🚨 **Demo failure path** | `POST /search { "q": "error" }` returns `503` so the UI's error state is exercisable. |
 | 🪟 **Two implementations** | Node (default) and Spring Boot — same contract, same UI, byte-identical frontend. |
+| 🗄 **Optional Postgres + Redis** | Java backend persists counts (JPA) and recency (Redis) when env vars set; falls back to H2 + in-memory. |
 
 ---
 
@@ -54,7 +55,9 @@ mvn spring-boot:run
 
 Same URL: <http://localhost:3000>. The frontend in `java/src/main/resources/static/` is a byte-identical copy of `public/`.
 
-> Counts reset on restart — the assignment scope was *"store query-count data"*, not persistence.
+**Persistence (optional):** Java backend supports Postgres + Redis. Default fallback is H2 in-memory. See [PERSISTENCE.md](PERSISTENCE.md) for setup.
+
+> With no env vars, counts reset on restart. Set `PG_URL` + `REDIS_URL` for durable state.
 
 ---
 
